@@ -1,0 +1,128 @@
+allres <- "Deseq2 result table including all genes that were tested for synON24M_NoCasin vs synOFF24M_NoCasin"
+pdSign <- c("Ube3a","Lrrc7","Tubb5","Calm1","Grm5","Kcnq5","Fgfr2","Strn","Actb","Dynll1","Pard3","Camk1d","Phactr1",
+            "Cacna2d3","Kcnd2","Cacna1e","Nrg1","Ubb","Acp1","Dlg4")
+intDisease <- c("Parkinson disease","synucleinopathy", "Lewy body dementia", "neurodegenerative disease")
+allgenes <- allres$gene
+
+openTargetAsso_db_lit <- qread("openTargetAsso_db_lit.qs") 
+table(pdSign %in% openTargetAsso_db$mouse)
+table(allgenes %in% openTargetAsso_db$mouse)
+allgenes <- intersect(allgenes, openTargetAsso_db$mouse)
+
+nPerm <- c(1:10000)
+disease_cols <- make.names(intDisease)
+score_cols        <- paste0(disease_cols)
+all_cols <- c("seed", "geneSet", score_cols)
+randomResults_df <- data.frame(
+  matrix(ncol = length(all_cols), nrow = 0),
+  stringsAsFactors = FALSE
+)
+colnames(randomResults_df) <- all_cols
+
+for(i in nPerm){
+  set.seed(i)
+  randomGene <- sample(allgenes, length(pdSign))
+  
+  df <- subset(
+    openTargetAsso_db_lit,
+    mouse %in% randomGene &
+      name  %in% intDisease
+  )
+  
+  # named vector of mean scores per disease (NA if missing)
+  avg_by_disease <- tapply(df$score, df$name, mean, na.rm = TRUE)
+  
+  # build a one-row list
+  new_row <- vector("list", length = ncol(randomResults_df))
+  names(new_row) <- colnames(randomResults_df)
+  new_row$seed    <- i
+  new_row$geneSet <- paste(randomGene, collapse = ",")
+  
+  # fill in each disease column
+  for(j in seq_along(intDisease)){
+    col <- disease_cols[j]
+    new_row[[col]] <- avg_by_disease[intDisease[j]]
+  }
+  
+  # replace any NA in new_row with 0
+  for(nm in names(new_row)){
+    if(is.na(new_row[[nm]])) new_row[[nm]] <- 0
+  }
+  
+  # rbind into the results
+  randomResults_df <- rbind(
+    randomResults_df,
+    as.data.frame(new_row, stringsAsFactors = FALSE)
+  )
+}
+
+openTarget_pdSign_intDisease_lit <- openTargetAsso_db_lit[which(openTargetAsso_db_lit$mouse %in% pdSign & openTargetAsso_db_lit$name %in% intDisease),]
+
+randomResults_df$condition <- "random"
+openTarget_pdSign_intDisease_lit$condition <- "pdSign"
+
+disease_cols <- setdiff(colnames(randomResults_df), c("seed","geneSet","condition"))
+random_long <- randomResults_df %>%
+  pivot_longer(
+    cols      = all_of(disease_cols),
+    names_to  = "disease",
+    values_to = "avgScore"
+  ) %>%
+  mutate(
+    # restore any cleaned names if you want spaces instead of dots
+    disease   = gsub("\\.", " ", disease),
+    condition = "random"
+  )
+
+open_long <- openTarget_pdSign_intDisease_lit %>%
+  filter(name %in% intDisease) %>%
+  transmute(
+    disease   = name,
+    avgScore  = score,
+    condition = "pdSign"
+  )
+
+# 3) bind and plot
+combined <- bind_rows(random_long, open_long)
+combined$condition <- factor(combined$condition, levels = c("random","pdSign"))
+ggplot(combined, aes(x = disease, y = avgScore, fill = condition)) +
+  geom_boxplot(position = position_dodge(width = 0.8), outlier.alpha = 0) +
+  stat_summary(
+    aes(group = condition),
+    fun     = mean,
+    geom    = "point",
+    shape   = 21,
+    position = position_dodge(width = 0.8),
+    fill = "gold"
+  ) +
+  labs(
+    x = "Disease",
+    y = "Average Score",
+    title = "Random vs. OpenTarget Scores by Disease",
+    fill = "Condition"
+  ) +
+  theme_classic() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  scale_fill_manual(name = "condition", values = c("random" = "grey", "pdSign" = "red3"))
+
+obs_df <- open_long %>% 
+  group_by(disease) %>% 
+  summarise(obs_mean = mean(avgScore), .groups="drop")
+
+# 2) Gather the null (random) means by disease into lists
+null_df <- random_long %>% 
+  group_by(disease) %>% 
+  summarise(null_means = list(avgScore), .groups="drop")
+
+# 3) Join them and compute empirical p–values
+results_df <- obs_df %>% 
+  left_join(null_df, by = "disease") %>% 
+  mutate(
+    # one‐sided test: how often null ≥ observed?
+    p_empirical = map2_dbl(
+      null_means, obs_mean, 
+      ~ (sum(.x >= .y) + 1) / (length(.x) + 1)
+    )
+  ) %>% 
+  # optional: adjust across diseases
+  mutate(padj_empirical = p.adjust(p_empirical, method = "BH")) %>% 
+  dplyr::select(disease, obs_mean, null_means, p_empirical, padj_empirical)

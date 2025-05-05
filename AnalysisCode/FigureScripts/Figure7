@@ -4,7 +4,43 @@ pdSign <- c("Ube3a","Lrrc7","Tubb5","Calm1","Grm5","Kcnq5","Fgfr2","Strn","Actb"
 intDisease <- c("Parkinson disease","synucleinopathy", "Lewy body dementia", "neurodegenerative disease")
 allgenes <- allres$gene
 
-openTargetAsso_db_lit <- qread("openTargetAsso_db_lit.qs") 
+asso_dir <- "~/association_by_datasource_direct/" # download respective parquet files from https://platform.opentargets.org/downloads
+# 2. Grab all the part-*.snappy.parquet files
+files <- list.files(
+  path       = asso_dir,
+  pattern    = "^part-.*\\.snappy\\.parquet$",
+  full.names = TRUE
+)
+
+# 3. Read each one and row-bind into a single tibble
+openTargetAsso_db <- files %>%
+  map_dfr(read_parquet)
+
+openTargetAsso_db <- openTargetAsso_db %>%
+  left_join(
+    openTarget_db %>% dplyr::select(id, name),
+    by = c("diseaseId" = "id")
+  ) 
+gene_map <- mapIds(
+  x          = org.Hs.eg.db,
+  keys       = openTargetAsso_db$targetId,
+  column     = "SYMBOL",
+  keytype    = "ENSEMBL",
+  multiVals  = "first"
+)
+
+# add it as a column
+openTargetAsso_db$geneSymbol <- gene_map
+
+## get mh_data from mouse_human_genes.csv
+openTargetAsso_db <- openTargetAsso_db %>%
+  # join on human symbol → geneSymbol
+  left_join(
+    mh_data %>% dplyr::select(human, mouse),
+    by = c("geneSymbol" = "human")
+  ) 
+openTargetAsso_db_lit <- openTargetAsso_db[which(openTargetAsso_db$datatypeId == "literature"),]
+
 table(pdSign %in% openTargetAsso_db$mouse)
 table(allgenes %in% openTargetAsso_db$mouse)
 allgenes <- intersect(allgenes, openTargetAsso_db$mouse)

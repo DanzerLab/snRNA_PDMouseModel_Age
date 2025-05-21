@@ -1,164 +1,81 @@
-allres <- "Deseq2 result table including all genes that were tested for synON24M_NoCasin vs synOFF24M_NoCasin"
-pdSign <- c("Ube3a","Lrrc7","Tubb5","Calm1","Grm5","Kcnq5","Fgfr2","Strn","Actb","Dynll1","Pard3","Camk1d","Phactr1",
-            "Cacna2d3","Kcnd2","Cacna1e","Nrg1","Ubb","Acp1","Dlg4")
-intDisease <- c("Parkinson disease","synucleinopathy", "Lewy body dementia", "neurodegenerative disease")
-allgenes <- allres$gene
+allres_martirosyan <- "DESEQ2 results sheet for all tested genes from Martirosyan GABAergic Neuron PD vs Control , suppl table 6"
+allres_smajic <- "DESEQ2 results sheet for all tested genes from Smajic GABAergic Neuron PD vs Control, suppl talbe 7"
+pd_luciAge <- "DESEQ2 results sheet for only the significant genes from GABA-Rgs9 synON24M vs synOFF24M"
+mh_data <- read.csv2("/home/jaehyun/NAS/Labmembers/Lee_Jaehyun/GMT_FASTA_DBs/mouse_human_genes.csv", sep = ",")
+pd_luciAge$gene_h <- mh_data$human[
+  match(pd_luciAge$gene, mh_data$mouse)
+]
 
-asso_dir <- "~/association_by_datasource_direct/" # download respective parquet files from https://platform.opentargets.org/downloads
-# 2. Grab all the part-*.snappy.parquet files
-files <- list.files(
-  path       = asso_dir,
-  pattern    = "^part-.*\\.snappy\\.parquet$",
-  full.names = TRUE
-)
+# martirosyan
+mart <- allres_martirosyan %>%
+  dplyr::select(gene, log2FoldChange) %>%
+  dplyr::filter(!is.na(gene), !is.na(log2FoldChange)) 
 
-# 3. Read each one and row-bind into a single tibble
-openTargetAsso_db <- files %>%
-  map_dfr(read_parquet)
+# smajic
+smaj <- allres_smajic %>%
+  dplyr::select(gene, log2FoldChange) %>%
+  dplyr::filter(!is.na(gene), !is.na(log2FoldChange))
 
-openTargetAsso_db <- openTargetAsso_db %>%
-  left_join(
-    openTarget_db %>% dplyr::select(id, name),
-    by = c("diseaseId" = "id")
-  ) 
-gene_map <- mapIds(
-  x          = org.Hs.eg.db,
-  keys       = openTargetAsso_db$targetId,
-  column     = "SYMBOL",
-  keytype    = "ENSEMBL",
-  multiVals  = "first"
-)
+# luciAge (use gene_h)
+luci <- pd_luciAge %>%
+  dplyr::select(gene_h, log2FoldChange) %>%
+  dplyr::filter(!is.na(gene_h), !is.na(log2FoldChange)) 
 
-# add it as a column
-openTargetAsso_db$geneSymbol <- gene_map
-
-## get mh_data from mouse_human_genes.csv
-openTargetAsso_db <- openTargetAsso_db %>%
-  # join on human symbol → geneSymbol
-  left_join(
-    mh_data %>% dplyr::select(human, mouse),
-    by = c("geneSymbol" = "human")
-  ) 
-openTargetAsso_db_lit <- openTargetAsso_db[which(openTargetAsso_db$datatypeId == "literature"),]
-
-table(pdSign %in% openTargetAsso_db$mouse)
-table(allgenes %in% openTargetAsso_db$mouse)
-allgenes <- intersect(allgenes, openTargetAsso_db$mouse)
-
-nPerm <- c(1:10000)
-disease_cols <- make.names(intDisease)
-score_cols        <- paste0(disease_cols)
-all_cols <- c("seed", "geneSet", score_cols)
-randomResults_df <- data.frame(
-  matrix(ncol = length(all_cols), nrow = 0),
-  stringsAsFactors = FALSE
-)
-colnames(randomResults_df) <- all_cols
-
-for(i in nPerm){
-  set.seed(i)
-  randomGene <- sample(allgenes, length(pdSign))
-  
-  df <- subset(
-    openTargetAsso_db_lit,
-    mouse %in% randomGene &
-      name  %in% intDisease
-  )
-  
-  # named vector of mean scores per disease (NA if missing)
-  avg_by_disease <- tapply(df$score, df$name, mean, na.rm = TRUE)
-  
-  # build a one-row list
-  new_row <- vector("list", length = ncol(randomResults_df))
-  names(new_row) <- colnames(randomResults_df)
-  new_row$seed    <- i
-  new_row$geneSet <- paste(randomGene, collapse = ",")
-  
-  # fill in each disease column
-  for(j in seq_along(intDisease)){
-    col <- disease_cols[j]
-    new_row[[col]] <- avg_by_disease[intDisease[j]]
+scale_to_four <- function(df, col = "log2FoldChange", new_col = "log2FoldChange_scaled") {
+  # compute the maximum absolute value
+  vals <- df[[col]]
+  m    <- max(abs(vals), na.rm = TRUE)
+  if (m == 0 || is.infinite(m)) {
+    # if all zero or something’s weird, just fill zeros
+    df[[new_col]] <- 0
+    return(df)
   }
-  
-  # replace any NA in new_row with 0
-  for(nm in names(new_row)){
-    if(is.na(new_row[[nm]])) new_row[[nm]] <- 0
-  }
-  
-  # rbind into the results
-  randomResults_df <- rbind(
-    randomResults_df,
-    as.data.frame(new_row, stringsAsFactors = FALSE)
-  )
+  # scale so that ±m → ±4
+  df %>% mutate(!!new_col := !!sym(col) * (4 / m))
 }
 
-openTarget_pdSign_intDisease_lit <- openTargetAsso_db_lit[which(openTargetAsso_db_lit$mouse %in% pdSign & openTargetAsso_db_lit$name %in% intDisease),]
+mart <- scale_to_four(mart, col = "log2FoldChange")
+smaj <- scale_to_four(smaj, col = "log2FoldChange")
+luci <- scale_to_four(luci, col = "log2FoldChange")
 
-randomResults_df$condition <- "random"
-openTarget_pdSign_intDisease_lit$condition <- "pdSign"
+common_genes <- Reduce(intersect, list(mart$gene, smaj$gene, luci$gene_h))
 
-disease_cols <- setdiff(colnames(randomResults_df), c("seed","geneSet","condition"))
-random_long <- randomResults_df %>%
-  pivot_longer(
-    cols      = all_of(disease_cols),
-    names_to  = "disease",
-    values_to = "avgScore"
-  ) %>%
-  mutate(
-    # restore any cleaned names if you want spaces instead of dots
-    disease   = gsub("\\.", " ", disease),
-    condition = "random"
-  )
+mart_f <- mart %>% dplyr::filter(gene %in% common_genes) %>% mutate(sheet = "martirosyan")
+smaj_f <- smaj %>% dplyr::filter(gene %in% common_genes) %>% mutate(sheet = "smajic")
+luci_f <- luci %>% dplyr::filter(gene_h %in% common_genes) %>% mutate(sheet = "luciAge")
+luci_f$gene <- luci_f$gene_h
+luci_f$gene_h <- NULL
+combined_df <- bind_rows(mart_f, smaj_f, luci_f)
+combined_df$log2FoldChange <- NULL
+heatmat <- combined_df %>%
+  pivot_wider(names_from = gene, values_from = log2FoldChange_scaled) %>%
+  column_to_rownames(var = "sheet")
+heatmat <- t(heatmat)
+breaks <- seq(-4, 4, length.out = 101)
 
-open_long <- openTarget_pdSign_intDisease_lit %>%
-  filter(name %in% intDisease) %>%
-  transmute(
-    disease   = name,
-    avgScore  = score,
-    condition = "pdSign"
-  )
+# make a blue→white→red palette
+palette <- colorRampPalette(c("navy", "white", "firebrick"))(100)
 
-# 3) bind and plot
-combined <- bind_rows(random_long, open_long)
-combined$condition <- factor(combined$condition, levels = c("random","pdSign"))
-ggplot(combined, aes(x = disease, y = avgScore, fill = condition)) +
-  geom_boxplot(position = position_dodge(width = 0.8), outlier.alpha = 0) +
-  stat_summary(
-    aes(group = condition),
-    fun     = mean,
-    geom    = "point",
-    shape   = 21,
-    position = position_dodge(width = 0.8),
-    fill = "gold"
-  ) +
-  labs(
-    x = "Disease",
-    y = "Average Score",
-    title = "Random vs. OpenTarget Scores by Disease",
-    fill = "Condition"
-  ) +
-  theme_classic() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
-  scale_fill_manual(name = "condition", values = c("random" = "grey", "pdSign" = "red3"))
+mart_f$log2FC_mart <- mart_f$log2FoldChange_scaled
+smaj_f$log2FC_smaj <- smaj_f$log2FoldChange_scaled
+luci_f$log2FC_luci <- luci_f$log2FoldChange_scaled
 
-obs_df <- open_long %>% 
-  group_by(disease) %>% 
-  summarise(obs_mean = mean(avgScore), .groups="drop")
+plot_df_heat <- Reduce(
+  f = function(x, y) merge(x, y, by = "gene", all = FALSE),
+  x = list(smaj_f, mart_f, luci_f)
+)
+plot_df_heat$same_dir_human = sign(plot_df_heat$log2FC_smaj) == sign(plot_df_heat$log2FC_mart)
+plot_df_heat$same_dir_all = sign(plot_df_heat$log2FC_mart) == sign(plot_df_heat$log2FC_luci)
+sameAll <- plot_df$gene[which(plot_df_heat$same_dir_human == TRUE & plot_df_heat$same_dir_all == TRUE)]
 
-# 2) Gather the null (random) means by disease into lists
-null_df <- random_long %>% 
-  group_by(disease) %>% 
-  summarise(null_means = list(avgScore), .groups="drop")
+pheatmap(
+  heatmat[sameAll,],
+  color = palette,
+  breaks = breaks,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize_row = 10,
+  fontsize_col = 8,
+  main         = "log2FC heatmap (scaled to ±4)"
+)
 
-# 3) Join them and compute empirical p–values
-results_df <- obs_df %>% 
-  left_join(null_df, by = "disease") %>% 
-  mutate(
-    # one‐sided test: how often null ≥ observed?
-    p_empirical = map2_dbl(
-      null_means, obs_mean, 
-      ~ (sum(.x >= .y) + 1) / (length(.x) + 1)
-    )
-  ) %>% 
-  # optional: adjust across diseases
-  mutate(padj_empirical = p.adjust(p_empirical, method = "BH")) %>% 
-  dplyr::select(disease, obs_mean, null_means, p_empirical, padj_empirical)

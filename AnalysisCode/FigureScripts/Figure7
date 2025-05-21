@@ -1,7 +1,7 @@
 allres_martirosyan <- "DESEQ2 results sheet for all tested genes from Martirosyan GABAergic Neuron PD vs Control , suppl table 6"
 allres_smajic <- "DESEQ2 results sheet for all tested genes from Smajic GABAergic Neuron PD vs Control, suppl talbe 7"
 pd_luciAge <- "DESEQ2 results sheet for only the significant genes from GABA-Rgs9 synON24M vs synOFF24M"
-mh_data <- read.csv2("/home/jaehyun/NAS/Labmembers/Lee_Jaehyun/GMT_FASTA_DBs/mouse_human_genes.csv", sep = ",")
+mh_data <- "mouse-human data table"
 pd_luciAge$gene_h <- mh_data$human[
   match(pd_luciAge$gene, mh_data$mouse)
 ]

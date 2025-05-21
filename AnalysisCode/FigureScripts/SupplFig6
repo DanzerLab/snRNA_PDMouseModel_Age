@@ -1,0 +1,123 @@
+allres_martirosyan <- "DESEQ2 results sheet for all tested genes from Martirosyan GABAergic Neuron PD vs Control , suppl table 6"
+allres_smajic <- "DESEQ2 results sheet for all tested genes from Smajic GABAergic Neuron PD vs Control, suppl talbe 7"
+pd_luciAge <- "DESEQ2 results sheet for only the significant genes from GABA-Rgs9 synON24M vs synOFF24M"
+mh_data <- "mouse-human data table"
+pd_luciAge$gene_h <- mh_data$human[
+  match(pd_luciAge$gene, mh_data$mouse)
+]
+
+# martirosyan
+mart <- allres_martirosyan %>%
+  dplyr::select(gene, log2FoldChange) %>%
+  dplyr::filter(!is.na(gene), !is.na(log2FoldChange)) 
+
+# smajic
+smaj <- allres_smajic %>%
+  dplyr::select(gene, log2FoldChange) %>%
+  dplyr::filter(!is.na(gene), !is.na(log2FoldChange))
+
+# luciAge (use gene_h)
+luci <- pd_luciAge %>%
+  dplyr::select(gene_h, log2FoldChange) %>%
+  dplyr::filter(!is.na(gene_h), !is.na(log2FoldChange)) 
+
+scale_to_four <- function(df, col = "log2FoldChange", new_col = "log2FoldChange_scaled") {
+  # compute the maximum absolute value
+  vals <- df[[col]]
+  m    <- max(abs(vals), na.rm = TRUE)
+  if (m == 0 || is.infinite(m)) {
+    # if all zero or something’s weird, just fill zeros
+    df[[new_col]] <- 0
+    return(df)
+  }
+  # scale so that ±m → ±4
+  df %>% mutate(!!new_col := !!sym(col) * (4 / m))
+}
+
+mart <- scale_to_four(mart, col = "log2FoldChange")
+smaj <- scale_to_four(smaj, col = "log2FoldChange")
+luci <- scale_to_four(luci, col = "log2FoldChange")
+
+common_genes <- Reduce(intersect, list(mart$gene, smaj$gene, luci$gene_h))
+
+mart_f <- mart %>% dplyr::filter(gene %in% common_genes) %>% mutate(sheet = "martirosyan")
+smaj_f <- smaj %>% dplyr::filter(gene %in% common_genes) %>% mutate(sheet = "smajic")
+luci_f <- luci %>% dplyr::filter(gene_h %in% common_genes) %>% mutate(sheet = "luciAge")
+luci_f$gene <- luci_f$gene_h
+luci_f$gene_h <- NULL
+
+mart_f$log2FC_mart <- mart_f$log2FoldChange_scaled
+smaj_f$log2FC_smaj <- smaj_f$log2FoldChange_scaled
+luci_f$log2FC_luci <- luci_f$log2FoldChange_scaled
+
+topPD <-c("Ube3a","Lrrc7","Tubb5","Calm1","Grm5","Kcnq5","Fgfr2","Strn","Actb","Dynll1","Pard3","Camk1d","Phactr1",
+          "Cacna2d3","Kcnd2","Cacna1e","Nrg1","Ubb","Acp1","Dlg4")
+
+topPD_human <- mh_data$human[which(mh_data$mouse %in% topPD)]
+
+plot_df <- merge(mart_f,luci_f,by="gene")
+plot_df$same_dir = sign(plot_df$log2FC_mart) == sign(plot_df$log2FC_luci)
+plot_df$node     = plot_df$gene
+
+# 3) Make the scatter + labels plot
+ggplot(
+  plot_df[which(plot_df$node %in% c(topPD_human,"CALM3")),],  
+  aes(x = log2FC_mart, 
+      y = log2FC_luci, 
+      colour = same_dir)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_text_repel(aes(label = node),
+                  size = 3,
+                  max.overlaps = Inf,
+                  segment.size = 0.3,
+                  show.legend = FALSE) +
+  scale_colour_manual(values = c(`TRUE`  = "red",
+                                 `FALSE` = "blue"),
+                      guide = "none") +
+  geom_abline(slope = 1, intercept = 0,
+              linetype = "dashed", colour = "grey50") +
+  geom_hline(yintercept = 0, 
+             linetype = "dotted", colour = "grey70") +
+  geom_vline(xintercept = 0, 
+             linetype = "dotted", colour = "grey70") +
+  coord_fixed() +
+  labs(
+    x = "martirosyan log2FC (scaled to ±4)",
+    y = "luciAge log2FC (scaled to ±4)",
+    title    = "Comparison of log2FC between martirosyan and luciAge",
+    subtitle = "Red = same direction; Blue = opposite"
+  ) +
+  theme_minimal()
+
+plot_df <- merge(smaj_f,luci_f,by="gene")
+plot_df$same_dir = sign(plot_df$log2FC_smaj) == sign(plot_df$log2FC_luci)
+plot_df$node     = plot_df$gene
+
+ggplot(
+  plot_df[which(plot_df$node %in% c(topPD_human, "CALM3")),], 
+  aes(x = log2FC_smaj, 
+      y = log2FC_luci, 
+      colour = same_dir)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_text_repel(aes(label = node),
+                  size = 3,
+                  max.overlaps = Inf,
+                  segment.size = 0.3,
+                  show.legend = FALSE) +
+  scale_colour_manual(values = c(`TRUE`  = "red",
+                                 `FALSE` = "blue"),
+                      guide = "none") +
+  geom_abline(slope = 1, intercept = 0,
+              linetype = "dashed", colour = "grey50") +
+  geom_hline(yintercept = 0, 
+             linetype = "dotted", colour = "grey70") +
+  geom_vline(xintercept = 0, 
+             linetype = "dotted", colour = "grey70") +
+  coord_fixed() +
+  labs(
+    x = "smajic log2FC (scaled to ±4)",
+    y = "luciAge log2FC (scaled to ±4)",
+    title    = "Comparison of log2FC between smajic and luciAge",
+    subtitle = "Red = same direction; Blue = opposite"
+  ) +
+  theme_minimal()
